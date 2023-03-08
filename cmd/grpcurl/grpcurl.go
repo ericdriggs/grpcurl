@@ -4,6 +4,7 @@
 package main
 
 import (
+	"C"
 	"context"
 	"flag"
 	"fmt"
@@ -254,6 +255,16 @@ func (cs compositeSource) AllExtensionsForType(typeName string) ([]*desc.FieldDe
 		}
 	}
 	return exts, nil
+}
+
+// mainExport calls main function using parameter instead of stdin
+// allows calling main from other languages
+// supports all flags
+//
+//export mainExport
+func mainExport(osArgs []string) {
+	os.Args = osArgs
+	main()
 }
 
 func main() {
