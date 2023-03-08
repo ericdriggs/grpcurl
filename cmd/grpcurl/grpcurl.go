@@ -257,13 +257,31 @@ func (cs compositeSource) AllExtensionsForType(typeName string) ([]*desc.FieldDe
 	return exts, nil
 }
 
-// mainExport calls main function using parameter instead of stdin
-// allows calling main from other languages
-// supports all flags
-//
+/* mainExport calls main function using parameter instead of stdin
+allows calling main from other languages when use buildmode c-archive
+supports all flags
+
+usage:
+
+    pass the same arguments you would pass as if calling from the command-line, only as a parameter array (GoSlice)
+    do not pass program name (grpcurl) -- this is automatically populated
+
+build instructions:
+
+    cd cmd/grpcurl
+    go build  -buildmode=c-archive -o bin/grpcurl.a
+
+
+build artifacts:
+
+    grpcurl.a //c-style archive
+    grpcurl.h //c header file
+
+*/
 //export mainExport
 func mainExport(osArgs []string) {
-	os.Args = osArgs
+	args := append([]string{"grpcurl"}, osArgs...)
+	os.Args = args
 	main()
 }
 
