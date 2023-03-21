@@ -43,8 +43,25 @@ const noVersion = "dev build <no version set>"
 
 var version = noVersion
 
+type ExitCodeMessage struct {
+	ExitCode int
+	Message  string
+}
+
+func newExitCodeMessage(exitCode int, message string) *ExitCodeMessage {
+	return &ExitCodeMessage{Message: message, ExitCode: exitCode}
+}
+
+func (ecm *ExitCodeMessage) Error() string {
+	return fmt.Sprintf("exitCode: %d, message: %s", ecm.ExitCode, ecm.Message)
+}
+
+func (ecm *ExitCodeMessage) toJSON() string {
+	return fmt.Sprintf("{ \"exitCode\": %d, \"message\": \"%s\" }", ecm.ExitCode, ecm.Message)
+}
+
 var (
-	exit = os.Exit
+	exit = newExitCodeMessage
 
 	isUnixSocket func() bool // nil when run on non-unix platform
 
@@ -257,73 +274,81 @@ func (cs compositeSource) AllExtensionsForType(typeName string) ([]*desc.FieldDe
 	return exts, nil
 }
 
-/* mainExport calls main function using parameter instead of stdin
-allows calling main from other languages when use buildmode c-archive
-supports all flags
+func setOsArgsFromC(osArgsC *C.char) {
+	osArgsStr := C.GoString(osArgsC)
+	osArgs := strings.Split(osArgsStr, "\n")
+	setOsArgs(osArgs)
+}
 
-usage:
+func setOsArgs(osArgs []string) {
 
-    pass the same arguments you would pass as if calling from the command-line, only as a parameter array (GoSlice)
-    do not pass program name (grpcurl) -- this is automatically populated
-
-build instructions:
-
-    cd cmd/grpcurl
-    go build  -buildmode=c-archive -o bin/grpcurl.a
-
-
-build artifacts:
-
-    grpcurl.a //c-style archive
-    grpcurl.h //c header file
-
-*/
-//export mainExport
-func mainExport(osArgs []string) {
-	args := append([]string{"grpcurl"}, osArgs...)
-	os.Args = args
-	main()
+	if len(osArgs) > 0 {
+		//ensure program name is set as first argument
+		if !strings.Contains(osArgs[0], "grpcurl") {
+			osArgs = append([]string{"grpcurl"}, osArgs...)
+		}
+		os.Args = osArgs
+	}
+	fmt.Println("[" + strings.Join(osArgs, ", ") + "]")
 }
 
 func main() {
+	ecm := doMain()
+	os.Exit(ecm.ExitCode)
+}
+
+// supports calling grpcurl from C foreign function interface
+// osArgs is a newline delimited string which should support the same arguments as if calling from commandline
+// response is a  char* containing JSON { "exitCode": int, "message": string }
+// it is the caller's responsibility to free memory for both C.char* osArgs parameter, and C.char* response
+//
+//export cmain
+func cmain(osArgsC *C.char) *C.char {
+	setOsArgsFromC(osArgsC)
+	ecm := doMain()
+	return C.CString(ecm.toJSON())
+}
+
+func doMain() *ExitCodeMessage {
+
 	flags.Usage = usage
 	flags.Parse(os.Args[1:])
 	if *help {
 		usage()
-		os.Exit(0)
+		return newExitCodeMessage(0, "")
 	}
 	if *printVersion {
 		fmt.Fprintf(os.Stderr, "%s %s\n", filepath.Base(os.Args[0]), version)
-		os.Exit(0)
+		return newExitCodeMessage(0, "")
 	}
 
 	// Do extra validation on arguments and figure out what user asked us to do.
 	if *connectTimeout < 0 {
-		fail(nil, "The -connect-timeout argument must not be negative.")
+		return fail(nil, "The -connect-timeout argument must not be negative.")
 	}
 	if *keepaliveTime < 0 {
-		fail(nil, "The -keepalive-time argument must not be negative.")
+		return fail(nil, "The -keepalive-time argument must not be negative.")
 	}
 	if *maxTime < 0 {
-		fail(nil, "The -max-time argument must not be negative.")
+		return fail(nil, "The -max-time argument must not be negative.")
 	}
 	if *maxMsgSz < 0 {
-		fail(nil, "The -max-msg-sz argument must not be negative.")
+		return fail(nil, "The -max-msg-sz argument must not be negative.")
 	}
 	if *plaintext && *insecure {
-		fail(nil, "The -plaintext and -insecure arguments are mutually exclusive.")
+		return fail(nil, "The -plaintext and -insecure arguments are mutually exclusive.")
 	}
 	if *plaintext && *cert != "" {
-		fail(nil, "The -plaintext and -cert arguments are mutually exclusive.")
+		return fail(nil, "The -plaintext and -cert arguments are mutually exclusive.")
 	}
 	if *plaintext && *key != "" {
-		fail(nil, "The -plaintext and -key arguments are mutually exclusive.")
+		return fail(nil, "The -plaintext and -key arguments are mutually exclusive.")
 	}
 	if (*key == "") != (*cert == "") {
-		fail(nil, "The -cert and -key arguments must be used together and both be present.")
+		return fail(nil, "The -cert and -key arguments must be used together and both be present.")
 	}
 	if *format != "json" && *format != "text" {
-		fail(nil, "The -format option must be 'json' or 'text'.")
+		return fail(nil, "The -format option must be 'json' or 'text'.")
 	}
 	if *emitDefaults && *format != "json" {
 		warn("The -emit-defaults is only used when using json format.")
@@ -332,7 +357,7 @@ func main() {
 	args := flags.Args()
 
 	if len(args) == 0 {
-		fail(nil, "Too few arguments.")
+		return fail(nil, "Too few arguments.")
 	}
 	var target string
 	if args[0] != "list" && args[0] != "describe" {
@@ -341,7 +366,7 @@ func main() {
 	}
 
 	if len(args) == 0 {
-		fail(nil, "Too few arguments.")
+		return fail(nil, "Too few arguments.")
 	}
 	var list, describe, invoke bool
 	if args[0] == "list" {
@@ -365,7 +390,7 @@ func main() {
 	var symbol string
 	if invoke {
 		if len(args) == 0 {
-			fail(nil, "Too few arguments.")
+			return fail(nil, "Too few arguments.")
 		}
 		symbol = args[0]
 		args = args[1:]
@@ -383,25 +408,25 @@ func main() {
 	}
 
 	if len(args) > 0 {
-		fail(nil, "Too many arguments.")
+		return fail(nil, "Too many arguments.")
 	}
 	if invoke && target == "" {
-		fail(nil, "No host:port specified.")
+		return fail(nil, "No host:port specified.")
 	}
 	if len(protoset) == 0 && len(protoFiles) == 0 && target == "" {
-		fail(nil, "No host:port specified, no protoset specified, and no proto sources specified.")
+		return fail(nil, "No host:port specified, no protoset specified, and no proto sources specified.")
 	}
 	if len(protoset) > 0 && len(reflHeaders) > 0 {
 		warn("The -reflect-header argument is not used when -protoset files are used.")
 	}
 	if len(protoset) > 0 && len(protoFiles) > 0 {
-		fail(nil, "Use either -protoset files or -proto files, but not both.")
+		return fail(nil, "Use either -protoset files or -proto files, but not both.")
 	}
 	if len(importPaths) > 0 && len(protoFiles) == 0 {
 		warn("The -import-path argument is not used unless -proto files are used.")
 	}
 	if !reflection.val && len(protoset) == 0 && len(protoFiles) == 0 {
-		fail(nil, "No protoset files or proto files specified and -use-reflection set to false.")
+		return fail(nil, "No protoset files or proto files specified and -use-reflection set to false.")
 	}
 
 	// Protoset or protofiles provided and -use-reflection unset
@@ -417,7 +442,7 @@ func main() {
 		defer cancel()
 	}
 
-	dial := func() *grpc.ClientConn {
+	dial := func() (*grpc.ClientConn, *ExitCodeMessage) {
 		dialTime := 10 * time.Second
 		if *connectTimeout > 0 {
 			dialTime = time.Duration(*connectTimeout * float64(time.Second))
@@ -439,14 +464,14 @@ func main() {
 		if !*plaintext {
 			tlsConf, err := grpcurl.ClientTLSConfig(*insecure, *cacert, *cert, *key)
 			if err != nil {
-				fail(err, "Failed to create TLS config")
+				return nil, fail(err, "Failed to create TLS config")
 			}
 
 			sslKeylogFile := os.Getenv("SSLKEYLOGFILE")
 			if sslKeylogFile != "" {
 				w, err := os.OpenFile(sslKeylogFile, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0600)
 				if err != nil {
-					fail(err, "Could not open SSLKEYLOGFILE %s", sslKeylogFile)
+					return nil, fail(err, "Could not open SSLKEYLOGFILE %s", sslKeylogFile)
 				}
 				tlsConf.KeyLogWriter = w
 			}
@@ -458,7 +483,7 @@ func main() {
 				if *serverName == *authority {
 					warn("Both -servername and -authority are present; prefer only -authority.")
 				} else {
-					fail(nil, "Cannot specify different values for -servername and -authority.")
+					return nil, fail(nil, "Cannot specify different values for -servername and -authority.")
 				}
 			}
 			overrideName := *serverName
@@ -488,31 +513,36 @@ func main() {
 		}
 		cc, err := grpcurl.BlockingDial(ctx, network, target, creds, opts...)
 		if err != nil {
-			fail(err, "Failed to dial target host %q", target)
+			return nil, fail(err, "Failed to dial target host %q", target)
 		}
-		return cc
+		if cc == nil {
+			return nil, fail(err, "failed to initialize Client connection")
+		}
+		fmt.Printf("dial cc: %+v\n", cc)
+		return cc, nil
 	}
-	printFormattedStatus := func(w io.Writer, stat *status.Status, formatter grpcurl.Formatter) {
+
+	getFormattedStatus := func(stat *status.Status, formatter grpcurl.Formatter) string {
 		formattedStatus, err := formatter(stat.Proto())
 		if err != nil {
-			fmt.Fprintf(w, "ERROR: %v", err.Error())
+			return fmt.Sprintf("ERROR: %v", err.Error())
 		}
-		fmt.Fprint(w, formattedStatus)
+		return fmt.Sprint(formattedStatus)
 	}
 
 	if *expandHeaders {
 		var err error
 		addlHeaders, err = grpcurl.ExpandHeaders(addlHeaders)
 		if err != nil {
-			fail(err, "Failed to expand additional headers")
+			return fail(err, "Failed to expand additional headers")
 		}
 		rpcHeaders, err = grpcurl.ExpandHeaders(rpcHeaders)
 		if err != nil {
-			fail(err, "Failed to expand rpc headers")
+			return fail(err, "Failed to expand rpc headers")
 		}
 		reflHeaders, err = grpcurl.ExpandHeaders(reflHeaders)
 		if err != nil {
-			fail(err, "Failed to expand reflection headers")
+			return fail(err, "Failed to expand reflection headers")
 		}
 	}
 
@@ -524,19 +554,23 @@ func main() {
 		var err error
 		fileSource, err = grpcurl.DescriptorSourceFromProtoSets(protoset...)
 		if err != nil {
-			fail(err, "Failed to process proto descriptor sets.")
+			return fail(err, "Failed to process proto descriptor sets.")
 		}
 	} else if len(protoFiles) > 0 {
 		var err error
 		fileSource, err = grpcurl.DescriptorSourceFromProtoFiles(importPaths, protoFiles...)
 		if err != nil {
-			fail(err, "Failed to process proto source files.")
+			return fail(err, "Failed to process proto source files.")
 		}
 	}
 	if reflection.val {
 		md := grpcurl.MetadataFromHeaders(append(addlHeaders, reflHeaders...))
 		refCtx := metadata.NewOutgoingContext(ctx, md)
-		cc = dial()
+
+		cc, ecm := dial()
+		if ecm != nil {
+			return ecm
+		}
 		refClient = grpcreflect.NewClientV1Alpha(refCtx, reflectpb.NewServerReflectionClient(cc))
 		reflSource := grpcurl.DescriptorSourceFromServer(ctx, refClient)
 		if fileSource != nil {
@@ -560,17 +594,17 @@ func main() {
 		}
 	}
 	defer reset()
-	exit = func(code int) {
+	exit := func(code int, message string) *ExitCodeMessage {
 		// since defers aren't run by os.Exit...
 		reset()
-		os.Exit(code)
+		return newExitCodeMessage(code, message)
 	}
 
 	if list {
 		if symbol == "" {
 			svcs, err := grpcurl.ListServices(descSource)
 			if err != nil {
-				fail(err, "Failed to list services")
+				return fail(err, "Failed to list services")
 			}
 			if len(svcs) == 0 {
 				fmt.Println("(No services)")
@@ -580,12 +614,12 @@ func main() {
 				}
 			}
 			if err := writeProtoset(descSource, svcs...); err != nil {
-				fail(err, "Failed to write protoset to %s", *protosetOut)
+				return fail(err, "Failed to write protoset to %s", *protosetOut)
 			}
 		} else {
 			methods, err := grpcurl.ListMethods(descSource, symbol)
 			if err != nil {
-				fail(err, "Failed to list methods for service %q", symbol)
+				return fail(err, "Failed to list methods for service %q", symbol)
 			}
 			if len(methods) == 0 {
 				fmt.Println("(No methods)") // probably unlikely
@@ -595,7 +629,7 @@ func main() {
 				}
 			}
 			if err := writeProtoset(descSource, symbol); err != nil {
-				fail(err, "Failed to write protoset to %s", *protosetOut)
+				return fail(err, "Failed to write protoset to %s", *protosetOut)
 			}
 		}
 
@@ -607,7 +641,7 @@ func main() {
 			// if no symbol given, describe all exposed services
 			svcs, err := descSource.ListServices()
 			if err != nil {
-				fail(err, "Failed to list services")
+				return fail(err, "Failed to list services")
 			}
 			if len(svcs) == 0 {
 				fmt.Println("Server returned an empty list of exposed services")
@@ -621,7 +655,7 @@ func main() {
 
 			dsc, err := descSource.FindSymbol(s)
 			if err != nil {
-				fail(err, "Failed to resolve symbol %q", s)
+				return fail(err, "Failed to resolve symbol %q", s)
 			}
 
 			fqn := dsc.GetFullyQualifiedName()
@@ -671,12 +705,12 @@ func main() {
 				elementType = "a method"
 			default:
 				err = fmt.Errorf("descriptor has unrecognized type %T", dsc)
-				fail(err, "Failed to describe symbol %q", s)
+				return fail(err, "Failed to describe symbol %q", s)
 			}
 
 			txt, err := grpcurl.GetDescriptorText(dsc, descSource)
 			if err != nil {
-				fail(err, "Failed to describe symbol %q", s)
+				return fail(err, "Failed to describe symbol %q", s)
 			}
 			fmt.Printf("%s is %s:\n", fqn, elementType)
 			fmt.Println(txt)
@@ -688,24 +722,28 @@ func main() {
 				options := grpcurl.FormatOptions{EmitJSONDefaultFields: true}
 				_, formatter, err := grpcurl.RequestParserAndFormatter(grpcurl.Format(*format), descSource, nil, options)
 				if err != nil {
-					fail(err, "Failed to construct formatter for %q", *format)
+					return fail(err, "Failed to construct formatter for %q", *format)
 				}
 				str, err := formatter(tmpl)
 				if err != nil {
-					fail(err, "Failed to print template for message %s", s)
+					return fail(err, "Failed to print template for message %s", s)
 				}
 				fmt.Println("\nMessage template:")
 				fmt.Println(str)
 			}
 		}
 		if err := writeProtoset(descSource, symbols...); err != nil {
-			fail(err, "Failed to write protoset to %s", *protosetOut)
+			return fail(err, "Failed to write protoset to %s", *protosetOut)
 		}
 
 	} else {
 		// Invoke an RPC
 		if cc == nil {
-			cc = dial()
+			newCc, err := dial()
+			if err != nil {
+				return err
+			}
+			cc = newCc
 		}
 		var in io.Reader
 		if *data == "@" {
@@ -713,6 +751,7 @@ func main() {
 		} else {
 			in = strings.NewReader(*data)
 		}
+		fmt.Printf("cc later: %+v\n", cc)
 
 		// if not verbose output, then also include record delimiters
 		// between each message, so output could potentially be piped
@@ -725,7 +764,7 @@ func main() {
 		}
 		rf, formatter, err := grpcurl.RequestParserAndFormatter(grpcurl.Format(*format), descSource, in, options)
 		if err != nil {
-			fail(err, "Failed to construct request parser and formatter for %q", *format)
+			return fail(err, "Failed to construct request parser and formatter for %q", *format)
 		}
 		h := &grpcurl.DefaultEventHandler{
 			Out:            os.Stdout,
@@ -738,7 +777,7 @@ func main() {
 			if errStatus, ok := status.FromError(err); ok && *formatError {
 				h.Status = errStatus
 			} else {
-				fail(err, "Error invoking method %q", symbol)
+				return fail(err, "Error invoking method %q", symbol)
 			}
 		}
 		reqSuffix := ""
@@ -754,14 +793,18 @@ func main() {
 			fmt.Printf("Sent %d request%s and received %d response%s\n", reqCount, reqSuffix, h.NumResponses, respSuffix)
 		}
 		if h.Status.Code() != codes.OK {
+			var errMsg string
 			if *formatError {
-				printFormattedStatus(os.Stderr, h.Status, formatter)
+				errMsg := getFormattedStatus(h.Status, formatter)
+				fmt.Fprintf(os.Stderr, errMsg)
 			} else {
-				grpcurl.PrintStatus(os.Stderr, h.Status, formatter)
+				errMsg = grpcurl.GetFormattedStatus(h.Status, formatter)
+				fmt.Fprintf(os.Stderr, errMsg)
 			}
-			exit(statusCodeOffset + int(h.Status.Code()))
+			return exit(statusCodeOffset+int(h.Status.Code()), errMsg)
 		}
 	}
+	return exit(0, "")
 }
 
 func usage() {
@@ -819,7 +862,7 @@ func warn(msg string, args ...interface{}) {
 	fmt.Fprintf(os.Stderr, msg, args...)
 }
 
-func fail(err error, msg string, args ...interface{}) {
+func fail(err error, msg string, args ...interface{}) *ExitCodeMessage {
 	if err != nil {
 		msg += ": %v"
 		args = append(args, err)
@@ -827,11 +870,12 @@ func fail(err error, msg string, args ...interface{}) {
 	fmt.Fprintf(os.Stderr, msg, args...)
 	fmt.Fprintln(os.Stderr)
 	if err != nil {
-		exit(1)
+		return exit(1, msg)
 	} else {
 		// nil error means it was CLI usage issue
-		fmt.Fprintf(os.Stderr, "Try '%s -help' for more details.\n", os.Args[0])
-		exit(2)
+		errMsg := fmt.Sprintf("Try '%s -help' for more details.\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, errMsg)
+		return exit(2, errMsg)
 	}
 }
 

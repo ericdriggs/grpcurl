@@ -1,3 +1,5 @@
 dist/
 .idea/
 VERSION
+/cmd/grpcurl/lib
+grpcurl_cmain_test.go

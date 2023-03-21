@@ -499,41 +499,41 @@ func (h *DefaultEventHandler) OnReceiveTrailers(stat *status.Status, md metadata
 	}
 }
 
-// PrintStatus prints details about the given status to the given writer. The given
-// formatter is used to print any detail messages that may be included in the status.
-// If the given status has a code of OK, "OK" is printed and that is all. Otherwise,
-// "ERROR:" is printed along with a line showing the code, one showing the message
+// GetFormattedStatus formats details about the given status as a string. The given
+// formatter is used to get any detail messages that may be included in the status.
+// If the given status has a code of OK, "OK" is returned and that is all. Otherwise,
+// "ERROR:" is returned along with a line showing the code, one showing the message
 // string, and each detail message if any are present. The detail messages will be
-// printed as proto text format or JSON, depending on the given formatter.
-func PrintStatus(w io.Writer, stat *status.Status, formatter Formatter) {
+// returned as proto text format or JSON, depending on the given formatter.
+func GetFormattedStatus(stat *status.Status, formatter Formatter) string {
 	if stat.Code() == codes.OK {
-		fmt.Fprintln(w, "OK")
-		return
+		return fmt.Sprintln("OK")
 	}
-	fmt.Fprintf(w, "ERROR:\n  Code: %s\n  Message: %s\n", stat.Code().String(), stat.Message())
+	statusMessage := fmt.Sprintf("ERROR:\n  Code: %s\n  Message: %s\n", stat.Code().String(), stat.Message())
 
 	statpb := stat.Proto()
 	if len(statpb.Details) > 0 {
-		fmt.Fprintf(w, "  Details:\n")
+		statusMessage += fmt.Sprintf("  Details:\n")
 		for i, det := range statpb.Details {
 			prefix := fmt.Sprintf("  %d)", i+1)
-			fmt.Fprintf(w, "%s\t", prefix)
+			statusMessage += fmt.Sprintf("%s\t", prefix)
 			prefix = strings.Repeat(" ", len(prefix)) + "\t"
 
 			output, err := formatter(det)
 			if err != nil {
-				fmt.Fprintf(w, "Error parsing detail message: %v\n", err)
+				statusMessage += fmt.Sprintf("Error parsing detail message: %v\n", err)
 			} else {
 				lines := strings.Split(output, "\n")
 				for i, line := range lines {
 					if i == 0 {
 						// first line is already indented
-						fmt.Fprintf(w, "%s\n", line)
+						statusMessage += fmt.Sprintf("%s\n", line)
 					} else {
-						fmt.Fprintf(w, "%s%s\n", prefix, line)
+						statusMessage += fmt.Sprintf("%s%s\n", prefix, line)
 					}
 				}
 			}
 		}
 	}
+	return statusMessage
 }
